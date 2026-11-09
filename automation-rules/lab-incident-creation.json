@@ -1,0 +1,123 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "title": "Lab automation rule: incident creation SOAR",
+    "description": "Optional template. Deploys a disabled automation rule that runs the three lab playbooks when the incident title contains the lab marker. Prefer the portal steps in automation-rules/README.md if import fails. This file does not enable the rule.",
+    "author": "Mosa Mofokeng"
+  },
+  "parameters": {
+    "workspaceName": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Existing Log Analytics workspace name that has Microsoft Sentinel. Do not create a new workspace with this template."
+      }
+    },
+    "automationRuleId": {
+      "type": "string",
+      "defaultValue": "be9cac7c-a5ea-44e8-bd29-072418e0666c",
+      "metadata": {
+        "description": "Stable GUID for this rule. Keep the default so a second deployment updates the same rule."
+      }
+    },
+    "ruleOrder": {
+      "type": "int",
+      "defaultValue": 100,
+      "minValue": 1,
+      "maxValue": 1000,
+      "metadata": {
+        "description": "Order among automation rules. Lower numbers run first."
+      }
+    },
+    "isEnabled": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Leave false until the playbooks are authorized and you are ready to test. Disable it again after the test."
+      }
+    },
+    "titleContains": {
+      "type": "string",
+      "defaultValue": "LAB-SOAR-Test-Incident",
+      "minLength": 1,
+      "metadata": {
+        "description": "Incident title filter. Keep this narrow. Do not clear it."
+      }
+    },
+    "ipEnrichmentPlaybookName": {
+      "type": "string",
+      "defaultValue": "pb-lab-ip-enrichment"
+    },
+    "assignPlaybookName": {
+      "type": "string",
+      "defaultValue": "pb-lab-assign-severity"
+    },
+    "teamsPlaybookName": {
+      "type": "string",
+      "defaultValue": "pb-lab-teams-card"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.SecurityInsights/automationRules",
+      "apiVersion": "2023-02-01",
+      "name": "[parameters('automationRuleId')]",
+      "scope": "[concat('Microsoft.OperationalInsights/workspaces/', parameters('workspaceName'))]",
+      "properties": {
+        "displayName": "LAB incident creation SOAR",
+        "order": "[parameters('ruleOrder')]",
+        "triggeringLogic": {
+          "isEnabled": "[parameters('isEnabled')]",
+          "expirationTimeUtc": null,
+          "triggersOn": "Incidents",
+          "triggersWhen": "Created",
+          "conditions": [
+            {
+              "conditionType": "Property",
+              "conditionProperties": {
+                "propertyName": "IncidentTitle",
+                "operator": "Contains",
+                "propertyValues": [
+                  "[parameters('titleContains')]"
+                ]
+              }
+            }
+          ]
+        },
+        "actions": [
+          {
+            "order": 1,
+            "actionType": "RunPlaybook",
+            "actionConfiguration": {
+              "logicAppResourceId": "[resourceId('Microsoft.Logic/workflows', parameters('ipEnrichmentPlaybookName'))]",
+              "tenantId": "[subscription().tenantId]"
+            }
+          },
+          {
+            "order": 2,
+            "actionType": "RunPlaybook",
+            "actionConfiguration": {
+              "logicAppResourceId": "[resourceId('Microsoft.Logic/workflows', parameters('assignPlaybookName'))]",
+              "tenantId": "[subscription().tenantId]"
+            }
+          },
+          {
+            "order": 3,
+            "actionType": "RunPlaybook",
+            "actionConfiguration": {
+              "logicAppResourceId": "[resourceId('Microsoft.Logic/workflows', parameters('teamsPlaybookName'))]",
+              "tenantId": "[subscription().tenantId]"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "outputs": {
+    "automationRuleId": {
+      "type": "string",
+      "value": "[parameters('automationRuleId')]"
+    }
+  }
+}

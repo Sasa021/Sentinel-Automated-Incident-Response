@@ -1,0 +1,27 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "playbookName": {
+      "value": "pb-lab-assign-severity"
+    },
+    "assigneeObjectId": {
+      "value": "REPLACE_WITH_LAB_ANALYST_OBJECT_ID"
+    },
+    "assigneeDisplayName": {
+      "value": "REPLACE_WITH_LAB_ANALYST_DISPLAY_NAME"
+    },
+    "assigneeEmail": {
+      "value": "REPLACE_WITH_LAB_ANALYST_UPN"
+    },
+    "assigneeUserPrincipalName": {
+      "value": "REPLACE_WITH_LAB_ANALYST_UPN"
+    },
+    "targetSeverity": {
+      "value": "High"
+    },
+    "targetStatus": {
+      "value": "Active"
+    }
+  }
+}

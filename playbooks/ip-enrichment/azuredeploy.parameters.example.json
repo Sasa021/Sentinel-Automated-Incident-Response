@@ -1,0 +1,21 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "playbookName": {
+      "value": "pb-lab-ip-enrichment"
+    },
+    "keyVaultName": {
+      "value": "REPLACE_WITH_YOUR_KEY_VAULT_NAME"
+    },
+    "secretName": {
+      "value": "abuseipdb-api-key"
+    },
+    "maxIps": {
+      "value": 5
+    },
+    "maxAgeInDays": {
+      "value": 90
+    }
+  }
+}
