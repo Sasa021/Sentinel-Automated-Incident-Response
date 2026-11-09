@@ -1,0 +1,445 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "title": "Lab playbook: IP enrichment comment",
+    "description": "When a Microsoft Sentinel incident is created, read up to maxIps IP entities, check each one with the AbuseIPDB free API, and add one incident comment. The API key is read from Key Vault at run time. This file contains no secret values and no results.",
+    "author": "Mosa Mofokeng",
+    "prerequisites": [
+      "Existing Microsoft Sentinel workspace",
+      "Key Vault secret with the AbuseIPDB API key",
+      "Microsoft Sentinel Responder for the playbook managed identity",
+      "Key Vault Secrets User for the playbook managed identity"
+    ]
+  },
+  "parameters": {
+    "playbookName": {
+      "type": "string",
+      "defaultValue": "pb-lab-ip-enrichment",
+      "minLength": 1,
+      "maxLength": 64,
+      "metadata": {
+        "description": "Logic App name. Letters, numbers, and hyphens only."
+      }
+    },
+    "keyVaultName": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 24,
+      "metadata": {
+        "description": "Name of the existing Key Vault. Do not put the secret value in this parameter."
+      }
+    },
+    "secretName": {
+      "type": "string",
+      "defaultValue": "abuseipdb-api-key",
+      "minLength": 1,
+      "metadata": {
+        "description": "Key Vault secret name. The value stays in Key Vault."
+      }
+    },
+    "maxIps": {
+      "type": "int",
+      "defaultValue": 5,
+      "minValue": 1,
+      "maxValue": 5,
+      "metadata": {
+        "description": "Maximum IP lookups per incident. Capped at 5 to protect the AbuseIPDB free daily quota."
+      }
+    },
+    "maxAgeInDays": {
+      "type": "int",
+      "defaultValue": 90,
+      "minValue": 1,
+      "maxValue": 365,
+      "metadata": {
+        "description": "AbuseIPDB maxAgeInDays query parameter."
+      }
+    }
+  },
+  "variables": {
+    "sentinelConnectionName": "[concat('azuresentinel-', take(parameters('playbookName'), 40))]",
+    "keyVaultConnectionName": "[concat('keyvault-', take(parameters('playbookName'), 40))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Web/connections",
+      "apiVersion": "2016-06-01",
+      "name": "[variables('sentinelConnectionName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "V1",
+      "properties": {
+        "displayName": "[variables('sentinelConnectionName')]",
+        "customParameterValues": {},
+        "parameterValueType": "Alternative",
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Web/connections",
+      "apiVersion": "2016-06-01",
+      "name": "[variables('keyVaultConnectionName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "V1",
+      "properties": {
+        "displayName": "[variables('keyVaultConnectionName')]",
+        "customParameterValues": {},
+        "parameterValueType": "Alternative",
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/keyvault')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2019-05-01",
+      "name": "[parameters('playbookName')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/connections', variables('sentinelConnectionName'))]",
+        "[resourceId('Microsoft.Web/connections', variables('keyVaultConnectionName'))]"
+      ],
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "tags": {
+        "hidden-SentinelTemplateName": "[parameters('playbookName')]",
+        "hidden-SentinelTemplateVersion": "1.0.0"
+      },
+      "properties": {
+        "state": "Enabled",
+        "definition": {
+          "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "$connections": {
+              "defaultValue": {},
+              "type": "Object"
+            },
+            "keyVaultName": {
+              "type": "String",
+              "defaultValue": "[parameters('keyVaultName')]"
+            },
+            "secretName": {
+              "type": "String",
+              "defaultValue": "[parameters('secretName')]"
+            },
+            "maxIps": {
+              "type": "Int",
+              "defaultValue": "[parameters('maxIps')]"
+            },
+            "maxAgeInDays": {
+              "type": "Int",
+              "defaultValue": "[parameters('maxAgeInDays')]"
+            }
+          },
+          "triggers": {
+            "Microsoft_Sentinel_incident": {
+              "type": "ApiConnectionWebhook",
+              "inputs": {
+                "body": {
+                  "callback_url": "@{listCallbackUrl()}"
+                },
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                },
+                "path": "/incident-creation"
+              }
+            }
+          },
+          "actions": {
+            "Initialize_summary": {
+              "type": "InitializeVariable",
+              "runAfter": {},
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "summary",
+                    "type": "string",
+                    "value": ""
+                  }
+                ]
+              }
+            },
+            "Entities_-_Get_IPs": {
+              "type": "ApiConnection",
+              "runAfter": {},
+              "inputs": {
+                "body": "@triggerBody()?['object']?['properties']?['relatedEntities']",
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                },
+                "method": "post",
+                "path": "/entities/ip"
+              }
+            },
+            "Add_comment_entities_failed": {
+              "runAfter": {
+                "Entities_-_Get_IPs": [
+                  "Failed",
+                  "TimedOut"
+                ]
+              },
+              "type": "ApiConnection",
+              "inputs": {
+                "body": {
+                  "incidentArmId": "@triggerBody()?['object']?['id']",
+                  "message": "<p>Lab IP enrichment could not read IP entities. No call was made to AbuseIPDB. Open the Logic App run and check the analytics rule entity mapping. This comment does not contain a secret.</p>"
+                },
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                },
+                "method": "post",
+                "path": "/Incidents/Comment"
+              }
+            },
+            "Condition_has_IPs": {
+              "type": "If",
+              "runAfter": {
+                "Entities_-_Get_IPs": [
+                  "Succeeded"
+                ],
+                "Initialize_summary": [
+                  "Succeeded"
+                ]
+              },
+              "expression": {
+                "and": [
+                  {
+                    "greater": [
+                      "@length(coalesce(body('Entities_-_Get_IPs')?['IPs'], createArray()))",
+                      0
+                    ]
+                  }
+                ]
+              },
+              "actions": {
+                "Get_AbuseIPDB_key": {
+                  "type": "ApiConnection",
+                  "runAfter": {},
+                  "inputs": {
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['keyvault']['connectionId']"
+                      }
+                    },
+                    "method": "get",
+                    "path": "/secrets/@{encodeURIComponent(parameters('secretName'))}/value",
+                    "queries": {
+                      "vaultName": "@{parameters('keyVaultName')}"
+                    }
+                  },
+                  "runtimeConfiguration": {
+                    "secureData": {
+                      "properties": [
+                        "inputs",
+                        "outputs"
+                      ]
+                    }
+                  }
+                },
+                "Add_comment_key_failed": {
+                  "runAfter": {
+                    "Get_AbuseIPDB_key": [
+                      "Failed",
+                      "TimedOut"
+                    ]
+                  },
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "body": {
+                      "incidentArmId": "@triggerBody()?['object']?['id']",
+                      "message": "<p>Lab IP enrichment could not read the Key Vault secret. No call was made to AbuseIPDB. Check that the playbook managed identity has Key Vault Secrets User on the vault and that the secret name matches the parameter. The secret value is not written here.</p>"
+                    },
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                      }
+                    },
+                    "method": "post",
+                    "path": "/Incidents/Comment"
+                  }
+                },
+                "For_each_IP": {
+                  "type": "Foreach",
+                  "operationOptions": "Sequential",
+                  "runAfter": {
+                    "Get_AbuseIPDB_key": [
+                      "Succeeded"
+                    ]
+                  },
+                  "foreach": "@take(coalesce(body('Entities_-_Get_IPs')?['IPs'], createArray()), parameters('maxIps'))",
+                  "actions": {
+                    "Check_AbuseIPDB": {
+                      "type": "Http",
+                      "runAfter": {},
+                      "inputs": {
+                        "method": "GET",
+                        "uri": "https://api.abuseipdb.com/api/v2/check",
+                        "headers": {
+                          "Accept": "application/json",
+                          "Key": "@{body('Get_AbuseIPDB_key')?['value']}"
+                        },
+                        "queries": {
+                          "ipAddress": "@{items('For_each_IP')?['Address']}",
+                          "maxAgeInDays": "@{parameters('maxAgeInDays')}"
+                        }
+                      },
+                      "limit": {
+                        "timeout": "PT30S"
+                      },
+                      "retryPolicy": {
+                        "type": "none"
+                      },
+                      "runtimeConfiguration": {
+                        "secureData": {
+                          "properties": [
+                            "inputs"
+                          ]
+                        }
+                      }
+                    },
+                    "Append_lookup_result": {
+                      "type": "AppendToStringVariable",
+                      "runAfter": {
+                        "Check_AbuseIPDB": [
+                          "Succeeded"
+                        ]
+                      },
+                      "inputs": {
+                        "name": "summary",
+                        "value": "@{concat('IP: ', coalesce(items('For_each_IP')?['Address'], 'unknown'), '<br>abuseConfidenceScore: ', string(coalesce(body('Check_AbuseIPDB')?['data']?['abuseConfidenceScore'], 'not returned')), '<br>totalReports: ', string(coalesce(body('Check_AbuseIPDB')?['data']?['totalReports'], 'not returned')), '<br>numDistinctUsers: ', string(coalesce(body('Check_AbuseIPDB')?['data']?['numDistinctUsers'], 'not returned')), '<br>countryCode: ', string(coalesce(body('Check_AbuseIPDB')?['data']?['countryCode'], 'not returned')), '<br>usageType: ', replace(replace(string(coalesce(body('Check_AbuseIPDB')?['data']?['usageType'], 'not returned')), '<', ''), '>', ''), '<br>isp: ', replace(replace(string(coalesce(body('Check_AbuseIPDB')?['data']?['isp'], 'not returned')), '<', ''), '>', ''), '<br>domain: ', replace(replace(string(coalesce(body('Check_AbuseIPDB')?['data']?['domain'], 'not returned')), '<', ''), '>', ''), '<br>lastReportedAt: ', string(coalesce(body('Check_AbuseIPDB')?['data']?['lastReportedAt'], 'not returned')), '<br>isWhitelisted: ', string(coalesce(body('Check_AbuseIPDB')?['data']?['isWhitelisted'], 'not returned')), '<br><br>')}"
+                      }
+                    },
+                    "Append_lookup_failed": {
+                      "type": "AppendToStringVariable",
+                      "runAfter": {
+                        "Check_AbuseIPDB": [
+                          "Failed",
+                          "TimedOut"
+                        ]
+                      },
+                      "inputs": {
+                        "name": "summary",
+                        "value": "@{concat('IP: ', coalesce(items('For_each_IP')?['Address'], 'unknown'), '<br>AbuseIPDB request failed. No score was added. Open the Logic App run and read the HTTP status there. Do not copy request headers into your notes. They contain the API key.<br><br>')}"
+                      }
+                    }
+                  }
+                },
+                "Add_comment_results": {
+                  "runAfter": {
+                    "For_each_IP": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "body": {
+                      "incidentArmId": "@triggerBody()?['object']?['id']",
+                      "message": "@{concat('<p><b>Lab IP enrichment</b><br>Source: AbuseIPDB check API, free tier. These are the fields returned for this run. They are not a verdict.<br>maxAgeInDays: ', string(parameters('maxAgeInDays')), '<br>Lookup cap per incident: ', string(parameters('maxIps')), '<br><br>', variables('summary'), '</p>')}"
+                    },
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                      }
+                    },
+                    "method": "post",
+                    "path": "/Incidents/Comment"
+                  }
+                },
+                "Add_comment_loop_failed": {
+                  "runAfter": {
+                    "For_each_IP": [
+                      "Failed",
+                      "TimedOut"
+                    ]
+                  },
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "body": {
+                      "incidentArmId": "@triggerBody()?['object']?['id']",
+                      "message": "<p>Lab IP enrichment did not finish the IP loop. Open the Logic App run. This comment does not contain a secret.</p>"
+                    },
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                      }
+                    },
+                    "method": "post",
+                    "path": "/Incidents/Comment"
+                  }
+                }
+              },
+              "else": {
+                "actions": {
+                  "Add_comment_no_ip": {
+                    "runAfter": {},
+                    "type": "ApiConnection",
+                    "inputs": {
+                      "body": {
+                        "incidentArmId": "@triggerBody()?['object']?['id']",
+                        "message": "<p>Lab IP enrichment found no IP address entities on this incident. No call was made to AbuseIPDB. If this incident should have had an IP, check the analytics rule entity mapping: entity type IP, identifier Address.</p>"
+                      },
+                      "host": {
+                        "connection": {
+                          "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                        }
+                      },
+                      "method": "post",
+                      "path": "/Incidents/Comment"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "outputs": {}
+        },
+        "parameters": {
+          "$connections": {
+            "value": {
+              "azuresentinel": {
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('sentinelConnectionName'))]",
+                "connectionName": "[variables('sentinelConnectionName')]",
+                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]",
+                "connectionProperties": {
+                  "authentication": {
+                    "type": "ManagedServiceIdentity"
+                  }
+                }
+              },
+              "keyvault": {
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('keyVaultConnectionName'))]",
+                "connectionName": "[variables('keyVaultConnectionName')]",
+                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/keyvault')]",
+                "connectionProperties": {
+                  "authentication": {
+                    "type": "ManagedServiceIdentity"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "playbookResourceId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Logic/workflows', parameters('playbookName'))]"
+    },
+    "managedIdentityPrincipalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Logic/workflows', parameters('playbookName')), '2019-05-01', 'Full').identity.principalId]"
+    }
+  }
+}

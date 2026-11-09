@@ -1,0 +1,32 @@
+# Copy an azuredeploy.parameters.example.json file to a local file and fill it in.
+# Do not commit the filled copy.
+parameters.local.json
+*.parameters.local.json
+*.local.json
+
+# Secrets and credentials
+.env
+.env.*
+*.pem
+*.pfx
+*.key
+*.cer
+*.p12
+id_rsa
+id_rsa.pub
+local.settings.json
+secrets.json
+**/secrets/
+
+# Azure CLI and editors
+.azure/
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python cache
+__pycache__/
+*.pyc

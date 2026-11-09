@@ -1,0 +1,262 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "title": "Lab playbook: assign incident and set severity",
+    "description": "When a Microsoft Sentinel incident is created, assign it to the lab analyst parameters and set severity and status. This file contains no secret values and no results.",
+    "author": "Mosa Mofokeng",
+    "prerequisites": [
+      "Existing Microsoft Sentinel workspace",
+      "Microsoft Sentinel Responder for the playbook managed identity",
+      "Entra object id of a lab analyst account you control"
+    ]
+  },
+  "parameters": {
+    "playbookName": {
+      "type": "string",
+      "defaultValue": "pb-lab-assign-severity",
+      "minLength": 1,
+      "maxLength": 64,
+      "metadata": {
+        "description": "Logic App name."
+      }
+    },
+    "assigneeObjectId": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Entra object id of the lab analyst who should own the incident. Not a secret, but do not publish it in screenshots."
+      }
+    },
+    "assigneeDisplayName": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Display name of the lab analyst."
+      }
+    },
+    "assigneeEmail": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Mail address of the lab analyst. Use the user principal name if Mail is empty."
+      }
+    },
+    "assigneeUserPrincipalName": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "User principal name of the lab analyst."
+      }
+    },
+    "targetSeverity": {
+      "type": "string",
+      "defaultValue": "High",
+      "allowedValues": [
+        "Informational",
+        "Low",
+        "Medium",
+        "High"
+      ],
+      "metadata": {
+        "description": "Severity to set. The lab test incident starts as Informational so a change is visible."
+      }
+    },
+    "targetStatus": {
+      "type": "string",
+      "defaultValue": "Active",
+      "allowedValues": [
+        "New",
+        "Active"
+      ],
+      "metadata": {
+        "description": "Status to set. This playbook does not close incidents."
+      }
+    }
+  },
+  "variables": {
+    "sentinelConnectionName": "[concat('azuresentinel-', take(parameters('playbookName'), 40))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Web/connections",
+      "apiVersion": "2016-06-01",
+      "name": "[variables('sentinelConnectionName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "V1",
+      "properties": {
+        "displayName": "[variables('sentinelConnectionName')]",
+        "customParameterValues": {},
+        "parameterValueType": "Alternative",
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2019-05-01",
+      "name": "[parameters('playbookName')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/connections', variables('sentinelConnectionName'))]"
+      ],
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "tags": {
+        "hidden-SentinelTemplateName": "[parameters('playbookName')]",
+        "hidden-SentinelTemplateVersion": "1.0.0"
+      },
+      "properties": {
+        "state": "Enabled",
+        "definition": {
+          "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "$connections": {
+              "defaultValue": {},
+              "type": "Object"
+            },
+            "assigneeObjectId": {
+              "type": "String",
+              "defaultValue": "[parameters('assigneeObjectId')]"
+            },
+            "assigneeDisplayName": {
+              "type": "String",
+              "defaultValue": "[parameters('assigneeDisplayName')]"
+            },
+            "assigneeEmail": {
+              "type": "String",
+              "defaultValue": "[parameters('assigneeEmail')]"
+            },
+            "assigneeUserPrincipalName": {
+              "type": "String",
+              "defaultValue": "[parameters('assigneeUserPrincipalName')]"
+            },
+            "targetSeverity": {
+              "type": "String",
+              "defaultValue": "[parameters('targetSeverity')]"
+            },
+            "targetStatus": {
+              "type": "String",
+              "defaultValue": "[parameters('targetStatus')]"
+            }
+          },
+          "triggers": {
+            "Microsoft_Sentinel_incident": {
+              "type": "ApiConnectionWebhook",
+              "inputs": {
+                "body": {
+                  "callback_url": "@{listCallbackUrl()}"
+                },
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                },
+                "path": "/incident-creation"
+              }
+            }
+          },
+          "actions": {
+            "Update_incident": {
+              "type": "ApiConnection",
+              "runAfter": {},
+              "inputs": {
+                "method": "put",
+                "path": "/Incidents",
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                },
+                "body": {
+                  "incidentArmId": "@triggerBody()?['object']?['id']",
+                  "severity": "@{parameters('targetSeverity')}",
+                  "status": "@{parameters('targetStatus')}",
+                  "owner": {
+                    "objectId": "@{parameters('assigneeObjectId')}",
+                    "email": "@{parameters('assigneeEmail')}",
+                    "userPrincipalName": "@{parameters('assigneeUserPrincipalName')}",
+                    "assignedTo": "@{parameters('assigneeDisplayName')}"
+                  }
+                }
+              }
+            },
+            "Add_comment_assigned": {
+              "runAfter": {
+                "Update_incident": [
+                  "Succeeded"
+                ]
+              },
+              "type": "ApiConnection",
+              "inputs": {
+                "body": {
+                  "incidentArmId": "@triggerBody()?['object']?['id']",
+                  "message": "@{concat('<p>Lab playbook update succeeded. Confirm the owner, severity, and status on the incident blade. Requested severity: ', parameters('targetSeverity'), '. Requested status: ', parameters('targetStatus'), '. Requested owner display name: ', replace(replace(parameters('assigneeDisplayName'), '<', ''), '>', ''), '.</p>')}"
+                },
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                },
+                "method": "post",
+                "path": "/Incidents/Comment"
+              }
+            },
+            "Add_comment_assign_failed": {
+              "runAfter": {
+                "Update_incident": [
+                  "Failed",
+                  "TimedOut"
+                ]
+              },
+              "type": "ApiConnection",
+              "inputs": {
+                "body": {
+                  "incidentArmId": "@triggerBody()?['object']?['id']",
+                  "message": "<p>Lab playbook could not update the owner, severity, or status. Open the Logic App run. If the owner fields were rejected, set the owner in the designer from your lab analyst account and save. This comment does not contain a secret.</p>"
+                },
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                },
+                "method": "post",
+                "path": "/Incidents/Comment"
+              }
+            }
+          },
+          "outputs": {}
+        },
+        "parameters": {
+          "$connections": {
+            "value": {
+              "azuresentinel": {
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('sentinelConnectionName'))]",
+                "connectionName": "[variables('sentinelConnectionName')]",
+                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]",
+                "connectionProperties": {
+                  "authentication": {
+                    "type": "ManagedServiceIdentity"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "playbookResourceId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Logic/workflows', parameters('playbookName'))]"
+    },
+    "managedIdentityPrincipalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Logic/workflows', parameters('playbookName')), '2019-05-01', 'Full').identity.principalId]"
+    }
+  }
+}

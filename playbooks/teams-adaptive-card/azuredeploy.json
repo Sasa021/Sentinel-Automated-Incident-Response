@@ -1,0 +1,246 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "title": "Lab playbook: Teams adaptive card",
+    "description": "When a Microsoft Sentinel incident is created, post an adaptive card to a Teams channel. The card uses the incident payload from the trigger. This file contains no secret values, no webhook URL, and no results.",
+    "author": "Mosa Mofokeng",
+    "prerequisites": [
+      "Existing Microsoft Sentinel workspace",
+      "A standard Teams channel in the same lab tenant",
+      "Teams connection authorized by a user who can post to that channel",
+      "Microsoft Sentinel Reader for the playbook managed identity"
+    ]
+  },
+  "parameters": {
+    "playbookName": {
+      "type": "string",
+      "defaultValue": "pb-lab-teams-card",
+      "minLength": 1,
+      "maxLength": 64,
+      "metadata": {
+        "description": "Logic App name."
+      }
+    },
+    "teamId": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Teams team id, the groupId from the channel link. Not a secret, but treat it as lab data."
+      }
+    },
+    "channelId": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Teams channel id from the channel link. Use a standard channel. Private channels are not supported by this connector."
+      }
+    }
+  },
+  "variables": {
+    "sentinelConnectionName": "[concat('azuresentinel-', take(parameters('playbookName'), 40))]",
+    "teamsConnectionName": "[concat('teams-', take(parameters('playbookName'), 40))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Web/connections",
+      "apiVersion": "2016-06-01",
+      "name": "[variables('sentinelConnectionName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "V1",
+      "properties": {
+        "displayName": "[variables('sentinelConnectionName')]",
+        "customParameterValues": {},
+        "parameterValueType": "Alternative",
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Web/connections",
+      "apiVersion": "2016-06-01",
+      "name": "[variables('teamsConnectionName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "V1",
+      "properties": {
+        "displayName": "[variables('teamsConnectionName')]",
+        "customParameterValues": {},
+        "parameterValueType": "Alternative",
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/Teams')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2019-05-01",
+      "name": "[parameters('playbookName')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/connections', variables('sentinelConnectionName'))]",
+        "[resourceId('Microsoft.Web/connections', variables('teamsConnectionName'))]"
+      ],
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "tags": {
+        "hidden-SentinelTemplateName": "[parameters('playbookName')]",
+        "hidden-SentinelTemplateVersion": "1.0.0"
+      },
+      "properties": {
+        "state": "Enabled",
+        "definition": {
+          "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "$connections": {
+              "defaultValue": {},
+              "type": "Object"
+            },
+            "teamId": {
+              "type": "String",
+              "defaultValue": "[parameters('teamId')]"
+            },
+            "channelId": {
+              "type": "String",
+              "defaultValue": "[parameters('channelId')]"
+            }
+          },
+          "triggers": {
+            "Microsoft_Sentinel_incident": {
+              "type": "ApiConnectionWebhook",
+              "inputs": {
+                "body": {
+                  "callback_url": "@{listCallbackUrl()}"
+                },
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                },
+                "path": "/incident-creation"
+              }
+            }
+          },
+          "actions": {
+            "Compose_adaptive_card": {
+              "type": "Compose",
+              "runAfter": {},
+              "inputs": {
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard",
+                "version": "1.4",
+                "body": [
+                  {
+                    "type": "TextBlock",
+                    "size": "Large",
+                    "weight": "Bolder",
+                    "wrap": true,
+                    "text": "Lab Sentinel incident"
+                  },
+                  {
+                    "type": "TextBlock",
+                    "wrap": true,
+                    "weight": "Bolder",
+                    "text": "@{coalesce(triggerBody()?['object']?['properties']?['title'], '')}"
+                  },
+                  {
+                    "type": "FactSet",
+                    "facts": [
+                      {
+                        "title": "Number",
+                        "value": "@{string(coalesce(triggerBody()?['object']?['properties']?['incidentNumber'], ''))}"
+                      },
+                      {
+                        "title": "Severity",
+                        "value": "@{coalesce(triggerBody()?['object']?['properties']?['severity'], '')}"
+                      },
+                      {
+                        "title": "Status",
+                        "value": "@{coalesce(triggerBody()?['object']?['properties']?['status'], '')}"
+                      },
+                      {
+                        "title": "Created (UTC)",
+                        "value": "@{coalesce(triggerBody()?['object']?['properties']?['createdTimeUtc'], '')}"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "TextBlock",
+                    "wrap": true,
+                    "isSubtle": true,
+                    "text": "Lab alert only. Severity and status are the values at playbook start. Open the incident for enrichment comments and any later change."
+                  }
+                ],
+                "actions": [
+                  {
+                    "type": "Action.OpenUrl",
+                    "title": "Open incident",
+                    "url": "@{coalesce(triggerBody()?['object']?['properties']?['incidentUrl'], 'https://portal.azure.com')}"
+                  }
+                ]
+              }
+            },
+            "Post_adaptive_card": {
+              "type": "ApiConnection",
+              "runAfter": {
+                "Compose_adaptive_card": [
+                  "Succeeded"
+                ]
+              },
+              "inputs": {
+                "method": "post",
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['teams']['connectionId']"
+                  }
+                },
+                "body": {
+                  "recipient": {
+                    "groupId": "@{parameters('teamId')}",
+                    "channelId": "@{parameters('channelId')}"
+                  },
+                  "messageBody": "@{outputs('Compose_adaptive_card')}"
+                },
+                "path": "/v1.0/teams/conversation/adaptivecard/poster/Flow bot/location/@{encodeURIComponent('Channel')}"
+              }
+            }
+          },
+          "outputs": {}
+        },
+        "parameters": {
+          "$connections": {
+            "value": {
+              "azuresentinel": {
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('sentinelConnectionName'))]",
+                "connectionName": "[variables('sentinelConnectionName')]",
+                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]",
+                "connectionProperties": {
+                  "authentication": {
+                    "type": "ManagedServiceIdentity"
+                  }
+                }
+              },
+              "teams": {
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('teamsConnectionName'))]",
+                "connectionName": "[variables('teamsConnectionName')]",
+                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/Teams')]"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "playbookResourceId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Logic/workflows', parameters('playbookName'))]"
+    },
+    "managedIdentityPrincipalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Logic/workflows', parameters('playbookName')), '2019-05-01', 'Full').identity.principalId]"
+    }
+  }
+}
